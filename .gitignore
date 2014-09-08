@@ -1,0 +1,7 @@
+# Ignore all files starting with . to avoid temporary
+# files by editors being seen
+.*
+
+# Ignore the build directory in which CMake generates
+# file if use as instructed
+build/
