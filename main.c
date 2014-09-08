@@ -22,13 +22,141 @@
 int verbose=0;
 int debug=0;
 
+// Following four are the actual command handlers, two on each side.
+// Both assume that the socket is properly open.
+int server_send_file(int socket, const char* filepath)
+{
+  char buffer[BUF_SIZE];
+
+  dprintf("opening file %s\n", filepath);
+  FILE *f = fopen(filepath, "r");
+  if(f == NULL)
+  {
+    printf("Cannot open file for reading.\n");
+    return -1;
+  }
+  dprintf("file open, now sendingi\n");
+  while(!feof(f))
+  {
+    int count, status;
+
+    count = fread(buffer, 1, BUF_SIZE, f);
+    dprintf("sending %d bytes\n", count);
+    status = send(socket, buffer, count, 0);
+    if(status < 0)
+    {
+      printf("Cannot send file content.");
+      return -1;
+    }
+  }
+  dprintf("file sending complete\n");
+  fclose(f);
+  return 0;
+}
+int server_receive_file(int socket, char* prev_buffer, int prev_buffer_length, const char* filepath)
+{
+  char buffer[BUF_SIZE];
+  int count;
+
+  FILE *f = fopen(filepath, "w");
+  if(f == NULL)
+  {
+    printf("Cannot open file for reading.\n");
+    return -1;
+  }
+
+  /* first write the part that might have been received with the handshake */
+  dprintf("writing %d bytes from previous buffer\n", prev_buffer_length);
+  if(fwrite(prev_buffer, 1, prev_buffer_length, f) != prev_buffer_length)
+  {
+    printf("Cannot write to file.\n");
+    return -1;
+  }
+
+  while ((count = read(socket, buffer, BUF_SIZE))>0)
+  {
+    dprintf("received %d bytes", count);
+    fwrite(buffer, 1, count, f);
+  }
+
+  fclose(f);
+  return 0;
+}
+
+int client_send_file(int socket, const char* filepath)
+{
+  char buffer[BUF_SIZE];
+
+  FILE *f = fopen(filepath, "r");
+  if(f == NULL)
+  {
+    printf("Cannot open file for reading.\n");
+    return -1;
+  }
+  dprintf("file open, now sending\n");
+  while(!feof(f))
+  {
+    int count, status;
+
+    count = fread(buffer, 1, BUF_SIZE, f);
+    dprintf("sending %d bytes\n", count);
+    status = send(socket, buffer, count, 0);
+    if(status < 0)
+    {
+      printf("Cannot send file content.");
+      return -1;
+    }
+  }
+  dprintf("file sending complete\n");
+  fclose(f);
+  return 0;
+
+
+}
+/* Note that this GET handler actually prints to stdout, as it was
+   not specified anywhere to which file to write to. */
+int client_receive(int socket)
+{
+  char buffer[BUF_SIZE];
+  int count;
+  while ((count = read(socket, buffer, BUF_SIZE))>0)
+  {
+    printf("%s", buffer);
+  }
+}
+
+char address_buffer[FILENAME_MAX];
+char* address_from_location(const char* location)
+{
+  const char* ploc = strchr(location, ':');
+  if(ploc == NULL)
+  {
+    return NULL;
+  }
+
+  return strncpy(address_buffer, location, ploc - location);
+}
+
+const char* path_from_location(const char* location)
+{
+  const char* ploc = strchr(location, ':');
+  if(ploc == NULL)
+  {
+    return NULL;
+  }
+  else
+  {
+    return ploc+1;
+  }
+}
+
 int start_server(int port, char* root)
 {
   vprintf("Starting server on port %d with virtual root directory %s\n", port, root);
   int listen_socket, recv_socket;
   struct sockaddr_in my_name, peer_name;
   int status, addrlen;
-  
+
   /* create a socket */
   listen_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (listen_socket == -1)
@@ -62,10 +190,11 @@ int start_server(int port, char* root)
     int cmd;
     char location[FILENAME_MAX];
     char* location_start;
+    const char* path;
 
     /* wait for a connection */
     addrlen = sizeof(peer_name);
-    dprintf("Waiting for an incoming request...\n");
+    dprintf("\n\n\nWaiting for an incoming request...\n");
     /* following fflush is neccessary as sockets seem to block the stdout, so the printf have
        no effect. While this is a performance issue, performance is not an issue. */
     fflush(stdout);
@@ -75,7 +204,7 @@ int start_server(int port, char* root)
       perror("Wrong connection");
       return -1;
     }
-    
+
     dprintf("Received new connection, trying to read command and location\n");
     /* try to read a command and location (both zero terminated
        but arriving together), concatinate until you find both
@@ -97,6 +226,7 @@ int start_server(int port, char* root)
         printf("Received end of sending when not expected, closing connection and hoping for a better client\n");
         break;
       }
+      i += count;
       dprintf("buffer is %s\n", buffer);
       if(strlen(buffer) < CMD_MAX)
       {
@@ -120,7 +250,16 @@ int start_server(int port, char* root)
 
           dprintf("about to copy %s\n", location_start);
           strcpy(location, location_start);
-          break; 
+
+          //check here if location is allowed
+          path = path_from_location(location);
+          if(!(strstr(path, root) == path))
+          {
+            cmd = 0;
+            vprintf("Illegal path, not in the root.");
+          }
+
+          break;
         }
         else
         {
@@ -128,14 +267,18 @@ int start_server(int port, char* root)
         }
       }
     }
+    printf("Received command %d with location %s. Executing.\n", cmd, path);
+
     switch(cmd)
     {
       case CMD_PUT:
+        server_receive_file(recv_socket, location_start + strlen(location_start) + 1, buffer + i - location_start - strlen(location_start) - 1, path);
+        break;
       case CMD_GET:
-        printf("Received command %d with location %s. Listening more.\n", cmd, location);
+        server_send_file(recv_socket, path);
         break;
     }
-    
+
     close(recv_socket);
     //printf("Received command: %s and location: %s", buffer, buffer /*location*/ );
     /* respond with a greeting string (test functionality) */
@@ -143,33 +286,11 @@ int start_server(int port, char* root)
   return 0;
 }
 
-char address_buffer[FILENAME_MAX];
-char* address_from_location(const char* location)
-{
-  const char* ploc = strchr(location, ':');
-  if(ploc == NULL)
-  {
-    return NULL;
-  }
 
-  return strncpy(address_buffer, location, ploc - location);
-}
-
-const char* path_from_location(const char* location)
+int execute_cmd(char* cmd, char* location, int port, const char* source_location)
 {
-  const char* ploc = strchr(location, ':');
-  if(ploc == NULL)
-  {
-    return NULL;
-  }
-  else
-  {
-    return ploc+1;
-  }
-}
+  int res = -1;
 
-int execute_cmd(char* cmd, char* location, int port)
-{
   printf("executing command %s %s %d\n", cmd, location, port);
 
   printf("Address: %s, filepath: %s\n", address_from_location(location), path_from_location(location));
@@ -213,9 +334,19 @@ int execute_cmd(char* cmd, char* location, int port)
   {
     printf("error sending %d", errno);
   }
- 
+
+  if(!strncmp(cmd, "GET", 3))
+  {
+    vprintf("Receiving the file from the server.\n");
+    res = client_receive(sockd);
+  }
+  else if(!strncmp(cmd, "PUT", 3))
+  {
+    vprintf("Sending the file to the server.\n");
+    res = client_send_file(sockd, source_location);
+  }
   close(sockd);
-  return 0;
+  return res;
 }
 
 int main(int argc, char **argv)
@@ -226,6 +357,7 @@ int main(int argc, char **argv)
   char root_location[FILENAME_MAX] = "";
   int server=0;
   int port = 6789;
+  char source_location[FILENAME_MAX];
 
 
   while(1)
@@ -303,7 +435,7 @@ int main(int argc, char **argv)
   {
     /* If option 's' is not specified, this is a client. Retrieve
        the two compulsory arguments: CMD and PATH. */
-    if(optind != argc - 2)
+    if(optind >= argc - 2)
     {
       printf("Error, parameter missing\n");
       print_usage();
@@ -313,6 +445,28 @@ int main(int argc, char **argv)
     strncpy(cmd, argv[optind], CMD_MAX);
     strncpy(location, argv[optind+1], FILENAME_MAX);
 
+    if(!strcmp(cmd, "PUT"))
+    {
+      if(optind != argc - 3)
+      {
+        printf("Error, parameter missing\n");
+        print_usage();
+        return -1;
+      }
+      strncpy(source_location, argv[optind+1], FILENAME_MAX);
+      strncpy(location, argv[optind+2], FILENAME_MAX);
+    }
+    else
+    {
+      if(optind != argc - 2)
+      {
+        printf("Error, parameter missing\n");
+        print_usage();
+        return -1;
+      }
+      strncpy(location, argv[optind+1], FILENAME_MAX);
+    }
+
     /* check that address:filepath is legit */
     if(address_from_location(location) == NULL)
     {
@@ -320,7 +474,7 @@ int main(int argc, char **argv)
       print_usage();
       return -1;
     }
-    
+
     if(debug)
     {
       printf("Executing client command:\n");
@@ -329,7 +483,7 @@ int main(int argc, char **argv)
       printf("Cmd: %s\n", cmd);
       printf("Location: %s\n", location);
     }
-    return execute_cmd(cmd, location, port);
+    return execute_cmd(cmd, location, port, source_location);
   }
 }
 
