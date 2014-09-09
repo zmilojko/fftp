@@ -7,6 +7,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <unistd.h>
 
 #include <errno.h>
 
@@ -16,20 +17,26 @@
 #define CMD_PUT 1
 #define CMD_GET 2
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wvariadic-macros" 
+
 #define vprintf(...) if(debug) { printf(__VA_ARGS__); }
 #define dprintf(...) if(debug) { printf(__VA_ARGS__); }
+
+#pragma GCC diagnostic pop
 
 int verbose=0;
 int debug=0;
 
-// Following four are the actual command handlers, two on each side.
-// Both assume that the socket is properly open.
+/* Following four are the actual command handlers, two on each side.
+   Both assume that the socket is properly open. */
 int server_send_file(int socket, const char* filepath)
 {
     char buffer[BUF_SIZE];
+    FILE *f;
 
     dprintf("opening file %s\n", filepath);
-    FILE *f = fopen(filepath, "r");
+    f = fopen(filepath, "r");
     if(f == NULL)
     {
         printf("Cannot open file for reading.\n");
@@ -73,7 +80,7 @@ int server_receive_file(int socket, char* prev_buffer, int prev_buffer_length, c
         return -1;
     }
 
-    while ((count = read(socket, buffer, BUF_SIZE))>0)
+    while ((count = recv(socket, buffer, BUF_SIZE, 0))>0)
     {
         dprintf("received %d bytes", count);
         fwrite(buffer, 1, count, f);
@@ -119,10 +126,11 @@ int client_receive(int socket)
 {
     char buffer[BUF_SIZE];
     int count;
-    while ((count = read(socket, buffer, BUF_SIZE))>0)
+    while ((count = recv(socket, buffer, BUF_SIZE, 0))>0)
     {
         printf("%s", buffer);
     }
+    return 0;
 }
 
 char address_buffer[FILENAME_MAX];
@@ -152,10 +160,12 @@ const char* path_from_location(const char* location)
 
 int start_server(int port, char* root)
 {
-    vprintf("Starting server on port %d with virtual root directory %s\n", port, root);
     int listen_socket, recv_socket;
     struct sockaddr_in my_name, peer_name;
-    int status, addrlen;
+    int status;
+    unsigned int addrlen;
+
+    vprintf("Starting server on port %d with virtual root directory %s\n", port, root);
 
     /* create a socket */
     listen_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -251,7 +261,7 @@ int start_server(int port, char* root)
                     dprintf("about to copy %s\n", location_start);
                     strcpy(location, location_start);
 
-                    //check here if location is allowed
+                    /*check here if location is allowed */
                     path = path_from_location(location);
                     if(!(strstr(path, root) == path))
                     {
@@ -280,8 +290,6 @@ int start_server(int port, char* root)
         }
 
         close(recv_socket);
-        //printf("Received command: %s and location: %s", buffer, buffer /*location*/ );
-        /* respond with a greeting string (test functionality) */
     }
     return 0;
 }
@@ -290,17 +298,13 @@ int start_server(int port, char* root)
 int execute_cmd(char* cmd, char* location, int port, const char* source_location)
 {
     int res = -1;
+    int sockd;
+    struct sockaddr_in serv_name;
+    int status;
 
     printf("executing command %s %s %d\n", cmd, location, port);
 
-    printf("Address: %s, filepath: %s\n", address_from_location(location), path_from_location(location));
-    int sockd;
-    int count;
-    struct sockaddr_in serv_name;
-    char buf[BUF_SIZE];
-    int status;
-
-    /* create a socket */
+   /* create a socket */
     sockd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (sockd == -1)
     {
@@ -347,6 +351,13 @@ int execute_cmd(char* cmd, char* location, int port, const char* source_location
     }
     close(sockd);
     return res;
+}
+
+int print_usage()
+{
+    printf("Usage: ft <options> CMD HOST:PATH\n");
+    printf("Much more instructions should be added here...");
+    return 0;
 }
 
 int main(int argc, char **argv)
@@ -487,7 +498,3 @@ int main(int argc, char **argv)
     }
 }
 
-int print_usage()
-{
-    printf("Usage: ft <options> CMD HOST:PATH\n");
-}
