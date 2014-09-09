@@ -531,7 +531,7 @@ int main(int argc, char **argv)
     {
         /* If option 's' is not specified, this is a client. Retrieve
            the two compulsory arguments: CMD and PATH. */
-        if(optind >= argc - 2)
+        if(optind > argc - 2)
         {
             printf("Error, parameter missing\n");
             print_usage();
