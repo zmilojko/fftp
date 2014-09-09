@@ -150,7 +150,9 @@ int client_receive(int socket)
     int count;
     while ((count = recv(socket, buffer, BUF_SIZE, 0))>0)
     {
-        printf("%s", buffer);
+        vprintf("received %d bytes", count);
+        fwrite(buffer, 1, count,stdout);
+        fflush(stdout);
     }
     if(count < 0)
     {
