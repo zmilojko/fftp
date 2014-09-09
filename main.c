@@ -11,6 +11,9 @@
 
 #include <errno.h>
 
+#include<netdb.h>
+
+
 #define CMD_MAX 10
 #define BUF_SIZE 8192
 
@@ -379,6 +382,22 @@ int start_server(int port, char* root)
     return -1;
 }
 
+/* Following extracts at least one, if any, IPv4 address from a given hostname */
+char ip_buffer[16];
+const char* hostname_to_some_ip(const char* hostname)
+{
+    struct hostent *he;
+    struct in_addr **addr_list;
+
+    if ( (he = gethostbyname(hostname)) == NULL)
+    {
+        printf("Cannot resolve hostname");
+        return NULL;
+    }
+    addr_list = (struct in_addr **) he->h_addr_list;
+    return strncpy(ip_buffer, inet_ntoa(*addr_list[0]), 15);
+}
+
 /* Main client handler. Send the handshake message and call the appropriate
    send or receive handler. */
 int execute_cmd(char* cmd, char* location, int port,
@@ -388,6 +407,7 @@ int execute_cmd(char* cmd, char* location, int port,
     int sockd;
     struct sockaddr_in serv_name;
     int status;
+    const char* target_ip;
 
     vprintf("executing command %s %s %d\n", cmd, location, port);
 
@@ -402,7 +422,13 @@ int execute_cmd(char* cmd, char* location, int port,
     serv_name.sin_family = AF_INET;
     vprintf("Opening address to %s\n", address_from_location(location));
 
-    serv_name.sin_addr.s_addr = inet_addr(address_from_location(location));
+    target_ip = hostname_to_some_ip(address_from_location(location));
+
+    if(target_ip == NULL)
+    {
+        return -1;
+    }
+    serv_name.sin_addr.s_addr = inet_addr(target_ip);
     serv_name.sin_port = htons(port);
 
     /* connect to the server */
@@ -464,7 +490,6 @@ int main(int argc, char **argv)
     int server=0;
     int port = 6789;
     char source_location[FILENAME_MAX];
-
 
     while(1)
     {
