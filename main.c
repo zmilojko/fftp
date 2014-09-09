@@ -352,9 +352,9 @@ int start_server(int port, char* root)
                pointer arithmetic gives us the offset and length of that data
                in the buffer. */
             res = server_receive_file(recv_socket,
-                                location_start + strlen(location_start) + 1,
-                                buffer + i - location_start - strlen(location_start) - 1,
-                                path);
+                                      location_start + strlen(location_start) + 1,
+                                      buffer + i - location_start - strlen(location_start) - 1,
+                                      path);
             break;
         case CMD_GET:
             res = send_file(recv_socket, path);
