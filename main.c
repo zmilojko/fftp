@@ -18,19 +18,54 @@
 #define CMD_GET 2
 
 #pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wvariadic-macros" 
+#pragma GCC diagnostic ignored "-Wvariadic-macros"
 
 #define vprintf(...) if(debug) { printf(__VA_ARGS__); }
 #define dprintf(...) if(debug) { printf(__VA_ARGS__); }
 
 #pragma GCC diagnostic pop
 
+/* Build instructions: to build on Linux and Mac (tested tried on Mac yet),
+   following CMakeList.txt file can do the magic:
+
+       cmake_minimum_required(VERSION 2.8.7)
+       project(FFtp)
+       add_executable(ft main.c)
+
+   If CMake and standard build tools and libraries are installed,
+   you should be able to build with:
+
+       cmake .
+       make
+
+   To test, try for example the following in two separate consoles:
+
+       server> echo "content of a server-side file" > /home/myself/ftroot/sfile
+       server> ft -sr /home/myself/ftroot
+       (server should hang here)
+
+       client> ft GET localhost:/home/myself/ftroot/sfile
+       client> echo "content of a client-side file" > /some/location/cfile
+       client> ft PUT /some/location/cfile localhost:/home/myself/ftroot/cf
+
+*/
+
 int verbose=0;
 int debug=0;
 
-/* Following four are the actual command handlers, two on each side.
-   Both assume that the socket is properly open. */
-int server_send_file(int socket, const char* filepath)
+/* Following three are the actual command handlers, two on each side.
+   All three assume that the socket is properly open and they leave it
+   open.
+
+   Note that server and client side sending are almost
+   identical and same function can be used.
+
+   Note that file operations are not checked for errors (such as corrupt
+   disk or file system), that should as well be done for product grade.
+
+   None of the functions verifies in any way if the file has been received
+   completelly and without errors. There is no post-transfer handshake. */
+int send_file(int socket, const char* filepath)
 {
     char buffer[BUF_SIZE];
     FILE *f;
@@ -42,7 +77,7 @@ int server_send_file(int socket, const char* filepath)
         printf("Cannot open file for reading.\n");
         return -1;
     }
-    dprintf("file open, now sendingi\n");
+    dprintf("file open, now sending\n");
     while(!feof(f))
     {
         int count, status;
@@ -60,7 +95,15 @@ int server_send_file(int socket, const char* filepath)
     fclose(f);
     return 0;
 }
-int server_receive_file(int socket, char* prev_buffer, int prev_buffer_length, const char* filepath)
+
+/* This function receives the file from the socket and writes it into the newly
+   created file. Note that some of the file content might have been received
+   with the handshake message, and is passed to this function in a separate
+   buffer (see comment where this function is called). That data is written to
+   the file first, and then data is read from the socket and written in the
+   file until the socket is closed. */
+int server_receive_file(int socket, char* prev_buffer, int prev_buffer_length,
+                        const char* filepath)
 {
     char buffer[BUF_SIZE];
     int count;
@@ -86,42 +129,21 @@ int server_receive_file(int socket, char* prev_buffer, int prev_buffer_length, c
         fwrite(buffer, 1, count, f);
     }
 
-    fclose(f);
-    return 0;
-}
-
-int client_send_file(int socket, const char* filepath)
-{
-    char buffer[BUF_SIZE];
-
-    FILE *f = fopen(filepath, "r");
-    if(f == NULL)
+    if(count < 0)
     {
-        printf("Cannot open file for reading.\n");
+        perror("Error receiving file content.\n");
         return -1;
     }
-    dprintf("file open, now sending\n");
-    while(!feof(f))
-    {
-        int count, status;
 
-        count = fread(buffer, 1, BUF_SIZE, f);
-        dprintf("sending %d bytes\n", count);
-        status = send(socket, buffer, count, 0);
-        if(status < 0)
-        {
-            printf("Cannot send file content.");
-            return -1;
-        }
-    }
-    dprintf("file sending complete\n");
     fclose(f);
     return 0;
-
-
 }
+
 /* Note that this GET handler actually prints to stdout, as it was
-   not specified anywhere to which file to write to. */
+   not specified anywhere to which file to write to.
+
+   This is a messy solution as it is difficult to distinguish between
+   the transfer content and the debug/trace messages.*/
 int client_receive(int socket)
 {
     char buffer[BUF_SIZE];
@@ -130,11 +152,24 @@ int client_receive(int socket)
     {
         printf("%s", buffer);
     }
+    if(count < 0)
+    {
+        perror("Error receiving file content.\n");
+        return -1;
+    }
     return 0;
 }
 
+/* Following two functions parse location to get web address (IP
+   is accepted only, not an arbitrary hostname) and the file path.
+
+   Location: 127.0.0.1:/path/to/file
+   Address: 127.0.0.1
+   Path: /path/to/file
+
+   Both functions return NULL in case of illegal location string. */
 char address_buffer[FILENAME_MAX];
-char* address_from_location(const char* location)
+const char* address_from_location(const char* location)
 {
     const char* ploc = strchr(location, ':');
     if(ploc == NULL)
@@ -142,7 +177,7 @@ char* address_from_location(const char* location)
         return NULL;
     }
 
-    return strncpy(address_buffer, location, ploc - location);
+    return (const char*) strncpy(address_buffer, location, ploc - location);
 }
 
 const char* path_from_location(const char* location)
@@ -158,6 +193,8 @@ const char* path_from_location(const char* location)
     }
 }
 
+/* Main server handler. This function never returns, unless there
+   is an error. */
 int start_server(int port, char* root)
 {
     int listen_socket, recv_socket;
@@ -165,9 +202,10 @@ int start_server(int port, char* root)
     int status;
     unsigned int addrlen;
 
-    vprintf("Starting server on port %d with virtual root directory %s\n", port, root);
+    vprintf("Starting server on port %d with virtual root directory %s\n",
+            port, root);
 
-    /* create a socket */
+    /* create a listening socket */
     listen_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (listen_socket == -1)
     {
@@ -205,25 +243,41 @@ int start_server(int port, char* root)
         /* wait for a connection */
         addrlen = sizeof(peer_name);
         dprintf("\n\n\nWaiting for an incoming request...\n");
-        /* following fflush is neccessary as sockets seem to block the stdout, so the printf have
-           no effect. While this is a performance issue, performance is not an issue. */
+        /* following fflush is neccessary as sockets seem to block the stdout,
+           so the printf have no effect. While this is a performance issue,
+           performance is not an issue. */
         fflush(stdout);
-        recv_socket = accept(listen_socket, (struct sockaddr*)&peer_name, &addrlen);
+
+        /* Block here until a connection request has been received. Once you
+        have received a connection, handle it and wait for/handle another
+        connection. */
+        recv_socket = accept(listen_socket,
+                             (struct sockaddr*)&peer_name, &addrlen);
         if (recv_socket == -1)
         {
             perror("Wrong connection");
             return -1;
         }
 
-        dprintf("Received new connection, trying to read command and location\n");
+        dprintf("Received new connection, trying to read cmd and location\n");
         /* try to read a command and location (both zero terminated
            but arriving together), concatinate until you find both
-           zero terminators. */
+           zero terminators.
+
+           To be able to properly spot the zero-terminators, fill the buffer
+           with something else (255) but properly terminate it not to allow
+           strlen to cause heavoc beyond the buffer. This way
+           strlen(buffer) < CMD_MAX will indicate a zero terminator has been
+           read. */
         memset(buffer, 255, BUF_SIZE);
         buffer[BUF_SIZE - 1] = 0;
         cmd=0;
+        /* Loop until you have received a full handshake (cmd+location) or
+           and error occurs. */
         while(1)
         {
+            /* Receive data into a buffer offseted by i, which is the count of
+            the previously received data. */
             int count = recv(recv_socket, buffer + i, BUF_SIZE - i, 0);
 
             if(count == -1)
@@ -233,7 +287,8 @@ int start_server(int port, char* root)
             }
             if(count == 0)
             {
-                printf("Received end of sending when not expected, closing connection and hoping for a better client\n");
+                printf("Received end of sending when not expected, closing "
+                       "connection and hoping for a better client\n");
                 break;
             }
             i += count;
@@ -253,7 +308,11 @@ int start_server(int port, char* root)
                     printf("Illegal command received from client\n");
                     break;
                 }
-                dprintf("Command identified with ID: %d, trying to get location\n", cmd);
+                dprintf("Command identified with ID: %d,"
+                        " trying to get location\n", cmd);
+
+                /* After the command has been received, try to find the second
+                   zero-terminator, which ends the location. */
                 location_start = buffer + strlen(buffer) + 1;
                 if(strlen(location_start) < FILENAME_MAX)
                 {
@@ -267,6 +326,7 @@ int start_server(int port, char* root)
                     {
                         cmd = 0;
                         vprintf("Illegal path, not in the root.");
+                        break;
                     }
 
                     break;
@@ -279,23 +339,38 @@ int start_server(int port, char* root)
         }
         printf("Received command %d with location %s. Executing.\n", cmd, path);
 
+        /* If we broke from the preious loop with command set to something,
+           execute that command. If cmd is zero, but we are out of the previous
+           loop, it indicates and error, simply close the socket and take
+           the next connection. */
         switch(cmd)
         {
         case CMD_PUT:
-            server_receive_file(recv_socket, location_start + strlen(location_start) + 1, buffer + i - location_start - strlen(location_start) - 1, path);
+            /* The buffer might contain data that are part of the sent file,
+               which would be after the second terminator. Following nasty
+               pointer arithmetic gives us the offset and length of that data
+               in the buffer. */
+            server_receive_file(recv_socket,
+                                location_start + strlen(location_start) + 1,
+                                buffer + i - location_start - strlen(location_start) - 1,
+                                path);
             break;
         case CMD_GET:
-            server_send_file(recv_socket, path);
+            send_file(recv_socket, path);
             break;
         }
 
         close(recv_socket);
     }
-    return 0;
+
+    /* Following is never executed, and the outer loop cannot be broken from. */
+    return -1;
 }
 
-
-int execute_cmd(char* cmd, char* location, int port, const char* source_location)
+/* Main client handler. Send the handshake message and call the appropriate
+   send or receive handler. */
+int execute_cmd(char* cmd, char* location, int port,
+                const char* source_location)
 {
     int res = -1;
     int sockd;
@@ -304,7 +379,7 @@ int execute_cmd(char* cmd, char* location, int port, const char* source_location
 
     printf("executing command %s %s %d\n", cmd, location, port);
 
-   /* create a socket */
+    /* create a socket */
     sockd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (sockd == -1)
     {
@@ -326,13 +401,13 @@ int execute_cmd(char* cmd, char* location, int port, const char* source_location
         return -1;
     }
 
-    printf("sending: %s", cmd);
+    printf("sending cmd: %s", cmd);
     status = send(sockd, cmd, strlen(cmd)+1, 0);
     if (status < 0)
     {
         printf("error sending %d", errno);
     }
-    printf("sending: %s", location);
+    printf("sending location: %s", location);
     status = send(sockd, location, strlen(location)+1, 0);
     if (status < 0)
     {
@@ -347,12 +422,18 @@ int execute_cmd(char* cmd, char* location, int port, const char* source_location
     else if(!strncmp(cmd, "PUT", 3))
     {
         vprintf("Sending the file to the server.\n");
-        res = client_send_file(sockd, source_location);
+        res = send_file(sockd, source_location);
     }
     close(sockd);
     return res;
 }
 
+/* Inline command line instructions. Expand the output from this
+   function to make it easier for user to understan how to use the
+   application. Add a link to where more info can be found.
+
+   For the purpose of this exceprsize, just demonstrating how this
+   can be done. */
 int print_usage()
 {
     printf("Usage: ft <options> CMD HOST:PATH\n");
@@ -360,6 +441,8 @@ int print_usage()
     return 0;
 }
 
+/* Main fucntion: parse parameter and call one of the
+   top level handlers (Server or client). */
 int main(int argc, char **argv)
 {
     int c;
@@ -407,7 +490,8 @@ int main(int argc, char **argv)
             strncpy(root_location, optarg, FILENAME_MAX);
             break;
         case 'd':
-            debug=1;
+            debug = 1;
+            verbose = 1;
             break;
         default:
             print_usage();
@@ -421,7 +505,8 @@ int main(int argc, char **argv)
            started with the 'r option specified. */
         if(strlen(root_location) == 0)
         {
-            printf("Error, option s (Server) must be given with option r (root_location)\n");
+            printf("Error, option -s (Server) must be given "
+                   "with option r (root_location)\n");
             print_usage();
             return -1;
         }
@@ -481,7 +566,7 @@ int main(int argc, char **argv)
         /* check that address:filepath is legit */
         if(address_from_location(location) == NULL)
         {
-            printf("Location must be in form example.net:/tmp/filepath\n");
+            printf("Location must be in form example.net:/path/to/file\n");
             print_usage();
             return -1;
         }
