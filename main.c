@@ -239,6 +239,7 @@ int start_server(int port, char* root)
         char location[FILENAME_MAX];
         char* location_start;
         const char* path;
+        int res = -1;
 
         /* wait for a connection */
         addrlen = sizeof(peer_name);
@@ -337,7 +338,7 @@ int start_server(int port, char* root)
                 }
             }
         }
-        printf("Received command %d with location %s. Executing.\n", cmd, path);
+        vprintf("Received command %d with location %s. Executing.\n", cmd, path);
 
         /* If we broke from the preious loop with command set to something,
            execute that command. If cmd is zero, but we are out of the previous
@@ -350,17 +351,26 @@ int start_server(int port, char* root)
                which would be after the second terminator. Following nasty
                pointer arithmetic gives us the offset and length of that data
                in the buffer. */
-            server_receive_file(recv_socket,
+            res = server_receive_file(recv_socket,
                                 location_start + strlen(location_start) + 1,
                                 buffer + i - location_start - strlen(location_start) - 1,
                                 path);
             break;
         case CMD_GET:
-            send_file(recv_socket, path);
+            res = send_file(recv_socket, path);
             break;
         }
 
         close(recv_socket);
+
+        if(res == 0)
+        {
+            vprintf("Completed OK.");
+        }
+        else
+        {
+            vprintf("Error(s) occured.");
+        }
     }
 
     /* Following is never executed, and the outer loop cannot be broken from. */
@@ -377,7 +387,7 @@ int execute_cmd(char* cmd, char* location, int port,
     struct sockaddr_in serv_name;
     int status;
 
-    printf("executing command %s %s %d\n", cmd, location, port);
+    vprintf("executing command %s %s %d\n", cmd, location, port);
 
     /* create a socket */
     sockd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -388,7 +398,7 @@ int execute_cmd(char* cmd, char* location, int port,
     }
     /* server address */
     serv_name.sin_family = AF_INET;
-    printf("Opening address to %s", address_from_location(location));
+    vprintf("Opening address to %s\n", address_from_location(location));
 
     serv_name.sin_addr.s_addr = inet_addr(address_from_location(location));
     serv_name.sin_port = htons(port);
@@ -401,17 +411,17 @@ int execute_cmd(char* cmd, char* location, int port,
         return -1;
     }
 
-    printf("sending cmd: %s", cmd);
+    vprintf("sending cmd: %s\n", cmd);
     status = send(sockd, cmd, strlen(cmd)+1, 0);
     if (status < 0)
     {
-        printf("error sending %d", errno);
+        perror("error sending %d");
     }
-    printf("sending location: %s", location);
+    vprintf("sending location: %s\n", location);
     status = send(sockd, location, strlen(location)+1, 0);
     if (status < 0)
     {
-        printf("error sending %d", errno);
+        perror("error sending %d");
     }
 
     if(!strncmp(cmd, "GET", 3))
@@ -437,7 +447,7 @@ int execute_cmd(char* cmd, char* location, int port,
 int print_usage()
 {
     printf("Usage: ft <options> CMD HOST:PATH\n");
-    printf("Much more instructions should be added here...");
+    printf("Much more instructions should be added here...\n");
     return 0;
 }
 
